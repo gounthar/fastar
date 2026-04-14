@@ -11,25 +11,26 @@ use zstd::stream::write::Encoder as ZstdEncoder;
 
 #[pyclass]
 pub struct ArchiveWriter {
-    builder: Option<tar::Builder<Box<dyn Write + Send + Sync>>>,
+    builder: Option<tar::Builder<ArchiveWriterInner>>,
 }
 
 #[pymethods]
 impl ArchiveWriter {
     #[classmethod]
-    #[pyo3(signature = (path, mode))]
+    #[pyo3(signature = (path, mode, sparse=true))]
     pub fn open(
         _cls: &Bound<'_, PyType>,
         py: Python<'_>,
         path: PathBuf,
         mode: &str,
+        sparse: bool,
     ) -> PyResult<Py<ArchiveWriter>> {
         match mode {
             "w:gz" => {
                 let file = File::create(path)?;
                 let enc = GzEncoder::new(file, Compression::default());
-                let writer: Box<dyn Write + Send + Sync> = Box::new(enc);
-                let builder = tar::Builder::new(writer);
+                let mut builder = tar::Builder::new(ArchiveWriterInner::Gzip(enc));
+                builder.sparse(sparse);
                 Py::new(
                     py,
                     ArchiveWriter {
@@ -40,8 +41,8 @@ impl ArchiveWriter {
             "w:zst" => {
                 let file = File::create(path)?;
                 let enc = ZstdEncoder::new(file, 0)?; // default compression level
-                let writer: Box<dyn Write + Send + Sync> = Box::new(enc);
-                let builder = tar::Builder::new(writer);
+                let mut builder = tar::Builder::new(ArchiveWriterInner::Zstd(enc));
+                builder.sparse(sparse);
                 Py::new(
                     py,
                     ArchiveWriter {
@@ -51,8 +52,8 @@ impl ArchiveWriter {
             }
             "w" => {
                 let file = File::create(path)?;
-                let writer: Box<dyn Write + Send + Sync> = Box::new(file);
-                let builder = tar::Builder::new(writer);
+                let mut builder = tar::Builder::new(ArchiveWriterInner::Uncompressed(file));
+                builder.sparse(sparse);
                 Py::new(
                     py,
                     ArchiveWriter {
@@ -111,8 +112,8 @@ impl ArchiveWriter {
 
     fn close(&mut self) -> PyResult<()> {
         if let Some(builder) = self.builder.take() {
-            let mut writer = builder.into_inner()?;
-            writer.flush()?;
+            let writer = builder.into_inner()?;
+            writer.finish()?;
         }
         Ok(())
     }
@@ -129,5 +130,44 @@ impl ArchiveWriter {
     ) -> PyResult<bool> {
         self.close()?;
         Ok(false) // Propagate exceptions if any
+    }
+}
+
+enum ArchiveWriterInner {
+    Uncompressed(File),
+    Gzip(GzEncoder<File>),
+    Zstd(ZstdEncoder<'static, File>),
+}
+
+impl Write for ArchiveWriterInner {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Uncompressed(w) => w.write(buf),
+            Self::Gzip(w) => w.write(buf),
+            Self::Zstd(w) => w.write(buf),
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Uncompressed(w) => w.flush(),
+            Self::Gzip(w) => w.flush(),
+            Self::Zstd(w) => w.flush(),
+        }
+    }
+}
+
+impl ArchiveWriterInner {
+    fn finish(self) -> std::io::Result<()> {
+        match self {
+            Self::Zstd(enc) => {
+                enc.finish()?;
+                Ok(())
+            }
+            Self::Gzip(enc) => {
+                enc.finish()?;
+                Ok(())
+            }
+            Self::Uncompressed(mut f) => f.flush(),
+        }
     }
 }
