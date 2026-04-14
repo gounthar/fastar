@@ -1,0 +1,22 @@
+name: Sync upstream tags
+
+on:
+  schedule:
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+
+jobs:
+  sync-tags:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch and push upstream tags
+        run: |
+          git remote add upstream https://github.com/DoctorJohn/fastar.git
+          git fetch upstream --tags
+          git push origin --tags
