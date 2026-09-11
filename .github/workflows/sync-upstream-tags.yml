@@ -8,12 +8,32 @@ on:
 jobs:
   sync-tags:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
+      # GITHUB_TOKEN cannot push a ref that touches .github/workflows: the
+      # `workflows` permission it would need is not grantable to an App token.
+      # The push needs a PAT, and actions/checkout has to be the one holding
+      # it, since its persisted extraheader wins over any credentials in the
+      # remote URL.
+      - name: Verify sync token
+        env:
+          GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::DISPATCH_TOKEN is empty. Set a PAT with Contents (write) and Workflows (write): gh secret set DISPATCH_TOKEN --repo $GITHUB_REPOSITORY"
+            exit 1
+          fi
+          if ! gh api user >/dev/null 2>&1; then
+            echo "::error::DISPATCH_TOKEN is invalid or expired. Regenerate it and run: gh secret set DISPATCH_TOKEN --repo $GITHUB_REPOSITORY"
+            exit 1
+          fi
+
       - name: Checkout fork
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.DISPATCH_TOKEN }}
 
       - name: Fetch and push upstream tags
         run: |
